@@ -8,6 +8,7 @@ from rich import print
 
 from .benchmark.device_info import collect as collect_devices
 from .benchmark.preprocessing import gpu_matmul, run as run_preprocessing_benchmark
+from .data import build_spectrogram_cache
 from .generator.synthetic import GeneratorConfig, generate_dataset
 
 app = typer.Typer(no_args_is_help=True, help="Aggregate RF activity experiments.")
@@ -22,6 +23,30 @@ def generate_dataset_cmd(
 ):
     cfg = GeneratorConfig(max_devices=max_devices)
     summary = generate_dataset(output=output, samples=samples, seed=seed, cfg=cfg)
+    print(json.dumps(summary, indent=2))
+
+
+@app.command("prepare-dataset")
+def prepare_dataset_cmd(
+    dataset: Path = typer.Option(..., exists=True, file_okay=False),
+    output: Path | None = typer.Option(None, help="Defaults to <dataset>/cache"),
+    seed: int = typer.Option(42),
+    train_ratio: float = typer.Option(0.8, min=0.01, max=0.98),
+    validation_ratio: float = typer.Option(0.1, min=0.01, max=0.98),
+    nperseg: int = typer.Option(256, min=8),
+    overlap: float = typer.Option(0.5, min=0.0, max=0.99),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+):
+    summary = build_spectrogram_cache(
+        dataset,
+        output,
+        seed=seed,
+        train_ratio=train_ratio,
+        validation_ratio=validation_ratio,
+        nperseg=nperseg,
+        overlap=overlap,
+        overwrite=overwrite,
+    )
     print(json.dumps(summary, indent=2))
 
 
@@ -56,10 +81,11 @@ def train_pytorch_cmd(
     model: str = typer.Option("cnn", help="cnn or resnet18"),
     amp: bool = typer.Option(True, "--amp/--no-amp"),
     output: Path = typer.Option(Path("artifacts/pytorch_activity.pt")),
+    cache: Path | None = typer.Option(None, help="Prepared cache directory; defaults to <dataset>/cache when present"),
 ):
     from .training.pytorch_train import train
 
-    path = train(dataset, epochs, batch_size, output, model_name=model, amp=amp)
+    path = train(dataset, epochs, batch_size, output, model_name=model, amp=amp, cache=cache)
     print(f"saved: {path}")
 
 

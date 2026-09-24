@@ -4,7 +4,7 @@ RF CrowdSense is a GPU-oriented research repo for estimating **aggregate RF acti
 
 It does not decode communications, recover subscriber identifiers, track individual phones, or bypass cellular security.
 
-## v0.2 stack
+## v0.3 stack
 
 - Python 3.14 (latest 3.14.x selected by `uv`)
 - PyTorch 2.14.0
@@ -76,6 +76,36 @@ The activity classes are:
 101+
 ```
 
+## Prepare a cached spectrogram dataset
+
+Milestone 1 adds a disk-backed spectrogram cache and deterministic train/validation/test splits. This avoids recomputing the STFT for every sample on every epoch.
+
+```powershell
+uv run rfcrowd prepare-dataset `
+  --dataset .\data\synthetic-v0.2 `
+  --seed 42
+```
+
+By default this creates:
+
+```text
+data/synthetic-v0.2/cache/
+├── cache.json
+├── spectrograms.npy
+├── scores.npy
+├── counts.npy
+├── classes.npy
+└── splits.npz
+```
+
+`spectrograms.npy` is written in NumPy `.npy` format and opened with memory mapping during training. The split indices are deterministic for the same seed. If the source manifest or preprocessing settings change, rebuild explicitly:
+
+```powershell
+uv run rfcrowd prepare-dataset `
+  --dataset .\data\synthetic-v0.2 `
+  --overwrite
+```
+
 ## Train the custom PyTorch CNN
 
 ```powershell
@@ -86,7 +116,7 @@ uv run rfcrowd train-pytorch `
   --batch-size 64
 ```
 
-CUDA AMP is enabled automatically when CUDA is available. Disable it with `--no-amp`.
+CUDA AMP is enabled automatically when CUDA is available. Disable it with `--no-amp`. If `data/synthetic-v0.2/cache/cache.json` exists, training uses the cached spectrograms automatically and reports train/validation/test split sizes.
 
 ## Train torchvision ResNet-18
 
@@ -175,11 +205,20 @@ Out of scope:
 - bypassing cellular security
 - locating or tracking specific people or devices
 
+## Milestones
+
+### Milestone 1: cached dataset pipeline
+
+- disk-backed spectrogram cache
+- deterministic train/validation/test splits
+- automatic cache detection in PyTorch training
+- held-out test metrics saved into the checkpoint
+- cache reuse/staleness checks based on the source manifest and preprocessing settings
+
 ## Suggested next milestones
 
-1. Add cached spectrogram datasets and memory mapping.
-2. Add calibration for count ranges and confidence intervals.
-3. Add ONNX export for the PyTorch models.
-4. Benchmark FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
-5. Add legal/public RF datasets to test synthetic-to-real domain shift.
-6. Add experiment tracking and reproducible benchmark reports.
+1. Add calibration for count ranges and confidence intervals.
+2. Add ONNX export for the PyTorch models.
+3. Benchmark FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
+4. Add legal/public RF datasets to test synthetic-to-real domain shift.
+5. Add experiment tracking and reproducible benchmark reports.

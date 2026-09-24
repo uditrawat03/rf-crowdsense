@@ -5,8 +5,25 @@ import random
 
 import numpy as np
 
-from ..data import load_example, load_manifest
+from ..data import (
+    load_cache_metadata,
+    load_cached_splits,
+    load_example,
+    load_manifest,
+    make_splits,
+)
 from ..models.pytorch_models import build_model
+
+
+def _resolve_cache(dataset: Path, cache: Path | None) -> Path | None:
+    if cache is not None:
+        cache = cache.resolve()
+        load_cache_metadata(cache)
+        return cache
+    default_cache = dataset / "cache"
+    if (default_cache / "cache.json").exists():
+        return default_cache.resolve()
+    return None
 
 
 def train(
@@ -17,13 +34,15 @@ def train(
     model_name: str = "cnn",
     seed: int = 42,
     amp: bool = True,
+    cache: Path | None = None,
 ) -> Path:
     import torch
-    from torch.utils.data import DataLoader, Dataset, Subset
+    from torch.utils.data import DataLoader, Dataset
 
+    dataset = dataset.resolve()
     rows = load_manifest(dataset)
-    if len(rows) < 2:
-        raise ValueError("At least two dataset samples are required for training")
+    if len(rows) < 3:
+        raise ValueError("At least three dataset samples are required for training")
 
     random.seed(seed)
     np.random.seed(seed)
@@ -31,50 +50,121 @@ def train(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    class RFDataset(Dataset):
-        def __len__(self):
-            return len(rows)
+    cache_path = _resolve_cache(dataset, cache)
 
-        def __getitem__(self, idx):
-            x, score, _count, cls = load_example(dataset, rows[idx])
-            x = np.transpose(x, (2, 0, 1))
-            return (
-                torch.from_numpy(x),
-                torch.tensor([score], dtype=torch.float32),
-                torch.tensor(cls, dtype=torch.long),
+    if cache_path is not None:
+        metadata = load_cache_metadata(cache_path)
+        if int(metadata["samples"]) != len(rows):
+            raise ValueError(
+                f"Cache sample count ({metadata['samples']}) does not match dataset ({len(rows)}). "
+                "Rebuild the cache."
             )
+        specs = np.load(cache_path / "spectrograms.npy", mmap_mode="r")
+        scores = np.load(cache_path / "scores.npy", mmap_mode="r")
+        classes = np.load(cache_path / "classes.npy", mmap_mode="r")
+        splits = load_cached_splits(cache_path)
 
-    indices = np.arange(len(rows))
-    rng = np.random.default_rng(seed)
-    rng.shuffle(indices)
-    split = max(1, int(len(indices) * 0.8))
-    split = min(split, len(indices) - 1)
-    train_indices = indices[:split].tolist()
-    val_indices = indices[split:].tolist()
+        class CachedRFDataset(Dataset):
+            def __init__(self, indices: np.ndarray) -> None:
+                self.indices = np.asarray(indices, dtype=np.int64)
+
+            def __len__(self):
+                return len(self.indices)
+
+            def __getitem__(self, idx):
+                sample_index = int(self.indices[idx])
+                # torch.tensor copies the read-only memmap slice into writable tensor storage.
+                x = torch.tensor(specs[sample_index][None, ...], dtype=torch.float32)
+                return (
+                    x,
+                    torch.tensor([float(scores[sample_index])], dtype=torch.float32),
+                    torch.tensor(int(classes[sample_index]), dtype=torch.long),
+                )
+
+        train_dataset = CachedRFDataset(splits.train)
+        val_dataset = CachedRFDataset(splits.validation)
+        test_dataset = CachedRFDataset(splits.test)
+        data_mode = f"cache:{cache_path}"
+    else:
+        splits = make_splits(len(rows), seed=seed)
+
+        class RawRFDataset(Dataset):
+            def __init__(self, indices: np.ndarray) -> None:
+                self.indices = np.asarray(indices, dtype=np.int64)
+
+            def __len__(self):
+                return len(self.indices)
+
+            def __getitem__(self, idx):
+                sample_index = int(self.indices[idx])
+                x, score, _count, cls = load_example(dataset, rows[sample_index])
+                x = np.transpose(x, (2, 0, 1))
+                return (
+                    torch.from_numpy(x),
+                    torch.tensor([score], dtype=torch.float32),
+                    torch.tensor(cls, dtype=torch.long),
+                )
+
+        train_dataset = RawRFDataset(splits.train)
+        val_dataset = RawRFDataset(splits.validation)
+        test_dataset = RawRFDataset(splits.test)
+        data_mode = "raw-iq"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bool(amp and device.type == "cuda")
     model = build_model(model_name).to(device)
+
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(seed)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "pin_memory": device.type == "cuda",
+        "num_workers": 0,
+    }
     train_loader = DataLoader(
-        Subset(RFDataset(), train_indices),
-        batch_size=batch_size,
+        train_dataset,
         shuffle=True,
-        pin_memory=device.type == "cuda",
+        generator=loader_generator,
+        **loader_kwargs,
     )
-    val_loader = DataLoader(
-        Subset(RFDataset(), val_indices),
-        batch_size=batch_size,
-        shuffle=False,
-        pin_memory=device.type == "cuda",
-    )
+    val_loader = DataLoader(val_dataset, shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(test_dataset, shuffle=False, **loader_kwargs)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     score_loss_fn = torch.nn.MSELoss()
     class_loss_fn = torch.nn.CrossEntropyLoss()
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
+    def evaluate(loader) -> tuple[float, float]:
+        model.eval()
+        total_loss = 0.0
+        total_items = 0
+        correct = 0
+        with torch.inference_mode():
+            for x, score, cls in loader:
+                x = x.to(device, non_blocking=True)
+                score = score.to(device, non_blocking=True)
+                cls = cls.to(device, non_blocking=True)
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.float16,
+                    enabled=use_amp,
+                ):
+                    pred_score, pred_class = model(x)
+                    loss = score_loss_fn(pred_score, score) + 0.25 * class_loss_fn(pred_class, cls)
+                total_loss += float(loss.detach().cpu()) * x.size(0)
+                total_items += x.size(0)
+                correct += int((pred_class.argmax(dim=1) == cls).sum().item())
+        return total_loss / max(total_items, 1), correct / max(total_items, 1)
+
     best_val = float("inf")
+    best_val_accuracy = 0.0
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    print(
+        f"data={data_mode} train={len(train_dataset)} validation={len(val_dataset)} "
+        f"test={len(test_dataset)} device={device} amp={use_amp} model={model_name}"
+    )
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -100,40 +190,41 @@ def train(
             total_loss += float(loss.detach().cpu()) * x.size(0)
             total_items += x.size(0)
 
-        model.eval()
-        val_loss = 0.0
-        val_items = 0
-        correct = 0
-        with torch.inference_mode():
-            for x, score, cls in val_loader:
-                x = x.to(device, non_blocking=True)
-                score = score.to(device, non_blocking=True)
-                cls = cls.to(device, non_blocking=True)
-                pred_score, pred_class = model(x)
-                loss = score_loss_fn(pred_score, score) + 0.25 * class_loss_fn(pred_class, cls)
-                val_loss += float(loss.detach().cpu()) * x.size(0)
-                val_items += x.size(0)
-                correct += int((pred_class.argmax(dim=1) == cls).sum().item())
-
         train_mean = total_loss / max(total_items, 1)
-        val_mean = val_loss / max(val_items, 1)
-        val_accuracy = correct / max(val_items, 1)
+        val_mean, val_accuracy = evaluate(val_loader)
         print(
             f"epoch={epoch} train_loss={train_mean:.6f} val_loss={val_mean:.6f} "
-            f"val_acc={val_accuracy:.3f} device={device} amp={use_amp} model={model_name}"
+            f"val_acc={val_accuracy:.3f}"
         )
 
         if val_mean < best_val:
             best_val = val_mean
+            best_val_accuracy = val_accuracy
             torch.save(
                 {
-                    "version": 2,
+                    "version": 3,
                     "model_name": model_name,
                     "state_dict": model.state_dict(),
                     "best_val_loss": best_val,
+                    "best_val_accuracy": best_val_accuracy,
                     "activity_classes": ["0-5", "6-20", "21-50", "51-100", "101+"],
+                    "seed": seed,
+                    "data_mode": data_mode,
+                    "split_counts": {
+                        "train": len(train_dataset),
+                        "validation": len(val_dataset),
+                        "test": len(test_dataset),
+                    },
                 },
                 output,
             )
+
+    checkpoint = torch.load(output, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["state_dict"])
+    test_loss, test_accuracy = evaluate(test_loader)
+    checkpoint["test_loss"] = test_loss
+    checkpoint["test_accuracy"] = test_accuracy
+    torch.save(checkpoint, output)
+    print(f"test_loss={test_loss:.6f} test_acc={test_accuracy:.3f}")
 
     return output
