@@ -47,6 +47,9 @@ def collect() -> dict:
             "cuda_version": torch.version.cuda,
             "gpu_count": torch.cuda.device_count(),
             "gpus": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
+            "bf16_supported": bool(
+                torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            ),
         }
     except Exception as exc:
         result["pytorch"] = {"available": False, "error": str(exc)}

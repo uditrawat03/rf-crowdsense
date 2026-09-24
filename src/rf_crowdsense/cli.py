@@ -80,6 +80,7 @@ def train_pytorch_cmd(
     batch_size: int = typer.Option(32, min=1),
     model: str = typer.Option("cnn", help="cnn or resnet18"),
     amp: bool = typer.Option(True, "--amp/--no-amp"),
+    amp_dtype: str = typer.Option("fp16", help="fp16 or bf16 when AMP is enabled"),
     seed: int = typer.Option(42),
     count_coverage: float = typer.Option(
         0.90,
@@ -102,6 +103,7 @@ def train_pytorch_cmd(
         model_name=model,
         seed=seed,
         amp=amp,
+        amp_dtype=amp_dtype,
         cache=cache,
         count_coverage=count_coverage,
     )
@@ -177,6 +179,38 @@ def benchmark_inference_cmd(
         warmup=warmup,
         iterations=iterations,
     )
+    print(json.dumps(result, indent=2))
+
+
+@app.command("benchmark-precision")
+def benchmark_precision_cmd(
+    checkpoint: Path = typer.Option(..., exists=True, dir_okay=False),
+    sample: Path = typer.Option(..., exists=True, dir_okay=False),
+    device: str = typer.Option("cuda", help="auto, cpu, or cuda"),
+    batch_size: int = typer.Option(1, min=1),
+    warmup: int = typer.Option(20, min=0),
+    iterations: int = typer.Option(100, min=1),
+    precisions: str = typer.Option(
+        "fp32,fp16,bf16",
+        help="Comma-separated precision modes to benchmark",
+    ),
+    output: Path | None = typer.Option(None, help="Optional JSON report path"),
+):
+    from .benchmark.precision import benchmark_precision_modes
+
+    result = benchmark_precision_modes(
+        checkpoint,
+        sample,
+        device=device,
+        batch_size=batch_size,
+        warmup=warmup,
+        iterations=iterations,
+        precisions=precisions,
+    )
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        result["report"] = str(output.resolve())
     print(json.dumps(result, indent=2))
 
 

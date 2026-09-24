@@ -4,7 +4,7 @@ RF CrowdSense is a GPU-oriented research repo for estimating **aggregate RF acti
 
 It does not decode communications, recover subscriber identifiers, track individual phones, or bypass cellular security.
 
-## v0.5 stack
+## v0.6 stack
 
 - Python 3.14 (latest 3.14.x selected by `uv`)
 - PyTorch 2.14.0
@@ -21,6 +21,8 @@ It does not decode communications, recover subscriber identifiers, track individ
 - ONNX export using the PyTorch `torch.export`-based exporter
 - ONNX Runtime CPU/CUDA inference
 - PyTorch-vs-ONNX model-inference benchmarking
+- Selectable FP16/BF16 CUDA AMP training
+- FP32 vs FP16 vs BF16 inference benchmarking with peak CUDA memory reporting
 
 ## Windows quick start with uv
 
@@ -129,10 +131,11 @@ uv run rfcrowd train-pytorch `
   --model cnn `
   --epochs 10 `
   --batch-size 64 `
+  --amp-dtype fp16 `
   --count-coverage 0.90
 ```
 
-CUDA AMP is enabled automatically when CUDA is available. Disable it with `--no-amp`. If `data/synthetic-v0.2/cache/cache.json` exists, training uses the cached spectrograms automatically and reports train/validation/test split sizes.
+CUDA AMP is enabled automatically when CUDA is available. `--amp-dtype fp16` is the default. Use `--amp-dtype bf16` to train with BF16 autocast when the GPU reports native BF16 support, or disable mixed precision with `--no-amp`. FP16 training uses gradient scaling; BF16 does not. If `data/synthetic-v0.2/cache/cache.json` exists, training uses the cached spectrograms automatically and reports train/validation/test split sizes.
 
 Milestone 2 also reports aggregate transmitter-count MAE. The normalized activity head is converted back to a count using the dataset's configured `max_devices` value. The best checkpoint is then calibrated on the validation split with absolute-residual split conformal prediction. `--count-coverage 0.90` requests a 90% **dataset-level nominal coverage target** for the count interval. It is not a 90% probability statement for an individual sample.
 
@@ -268,6 +271,42 @@ uv run rfcrowd benchmark-inference `
 
 The JSON report includes mean, p50 and p95 latency, throughput, and ONNX Runtime mean-latency speedup relative to PyTorch eager execution. Try batch sizes such as `1`, `8`, `32`, and `64`, staying below the `--max-batch` used during export.
 
+## Benchmark FP32, FP16 and BF16
+
+Milestone 4 adds a model-level precision benchmark for the current PyTorch checkpoint. It runs the same already-preprocessed spectrogram through FP32, FP16 autocast and BF16 autocast, then reports latency, throughput, peak CUDA memory and numerical drift relative to FP32. Unsupported precision modes are reported as skipped.
+
+```powershell
+uv run rfcrowd benchmark-precision `
+  --checkpoint .\artifacts\pytorch_activity.pt `
+  --sample .\data\synthetic-v0.2\sample_000000.npz `
+  --device cuda `
+  --batch-size 1 `
+  --warmup 20 `
+  --iterations 200 `
+  --output .\artifacts\precision-batch1.json
+```
+
+Repeat with larger batches to see where the RTX 5050 reaches better throughput:
+
+```powershell
+--batch-size 8
+--batch-size 32
+--batch-size 64
+```
+
+The report includes a measured `fastest_precision` and `speedup_vs_fp32`. Treat that result as specific to the model, batch size, driver and GPU used for the run; the repo does not assume FP16 or BF16 is automatically faster. `rfcrowd doctor` also reports whether the current CUDA device exposes native BF16 support.
+
+To train a new checkpoint with BF16 instead of FP16:
+
+```powershell
+uv run rfcrowd train-pytorch `
+  --dataset .\data\synthetic-v0.2 `
+  --model cnn `
+  --epochs 10 `
+  --batch-size 64 `
+  --amp-dtype bf16
+```
+
 ## GPU benchmark
 
 ```powershell
@@ -371,10 +410,21 @@ Out of scope:
 - benchmark PyTorch eager vs ONNX Runtime with mean/p50/p95 latency and throughput
 - extend `rfcrowd doctor` with ONNX Runtime provider diagnostics
 
+### Milestone 4: CUDA precision profiling
+
+- add selectable FP16 or BF16 autocast for PyTorch training
+- use gradient scaling for FP16 while keeping BF16 unscaled
+- reject BF16 training when the CUDA device reports no native BF16 support
+- benchmark FP32, FP16 and BF16 against the same checkpoint/input
+- report mean/p50/p95 latency, throughput and peak CUDA memory
+- report low-precision numerical drift relative to FP32
+- save precision benchmark reports as JSON
+- extend `rfcrowd doctor` with CUDA BF16 capability detection
+
 ## Suggested next milestones
 
-1. Benchmark and optimize FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
-2. Add probability calibration for the activity-class head.
-3. Add TensorRT export/engine benchmarking after the ONNX baseline is measured.
-4. Add legal/public RF datasets to test synthetic-to-real domain shift.
-5. Add experiment tracking and reproducible benchmark reports.
+1. Add probability calibration for the activity-class head.
+2. Add TensorRT export/engine benchmarking after the ONNX and precision baselines are measured.
+3. Add legal/public RF datasets to test synthetic-to-real domain shift.
+4. Add experiment tracking and reproducible benchmark reports.
+5. Add batch inference over prepared datasets for end-to-end throughput measurement.

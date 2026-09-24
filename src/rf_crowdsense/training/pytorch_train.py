@@ -19,6 +19,7 @@ from ..data import (
     resolve_count_scale,
 )
 from ..models.pytorch_models import build_model
+from ..precision import grad_scaler_enabled, normalize_amp_dtype, precision_support, torch_dtype
 
 
 def _resolve_cache(dataset: Path, cache: Path | None) -> Path | None:
@@ -40,6 +41,7 @@ def train(
     model_name: str = "cnn",
     seed: int = 42,
     amp: bool = True,
+    amp_dtype: str = "fp16",
     cache: Path | None = None,
     count_coverage: float = 0.90,
 ) -> Path:
@@ -48,6 +50,7 @@ def train(
 
     if not 0.0 < count_coverage < 1.0:
         raise ValueError("count_coverage must be between 0 and 1")
+    amp_dtype = normalize_amp_dtype(amp_dtype)
 
     dataset = dataset.resolve()
     rows = load_manifest(dataset)
@@ -128,6 +131,11 @@ def train(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = bool(amp and device.type == "cuda")
+    if use_amp:
+        supported, reason = precision_support(torch, amp_dtype, device)
+        if not supported:
+            raise RuntimeError(reason or f"{amp_dtype} is not supported on {device}")
+    autocast_dtype = torch_dtype(torch, amp_dtype)
     model = build_model(model_name).to(device)
 
     loader_generator = torch.Generator()
@@ -149,7 +157,10 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     score_loss_fn = torch.nn.MSELoss()
     class_loss_fn = torch.nn.CrossEntropyLoss()
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=grad_scaler_enabled(amp_enabled=use_amp, amp_dtype=amp_dtype),
+    )
 
     def evaluate(loader, *, collect_counts: bool = False):
         model.eval()
@@ -168,7 +179,7 @@ def train(
                 cls = cls.to(device, non_blocking=True)
                 with torch.autocast(
                     device_type=device.type,
-                    dtype=torch.float16,
+                    dtype=autocast_dtype,
                     enabled=use_amp,
                 ):
                     pred_score, pred_class = model(x)
@@ -205,7 +216,8 @@ def train(
 
     print(
         f"data={data_mode} train={len(train_dataset)} validation={len(val_dataset)} "
-        f"test={len(test_dataset)} device={device} amp={use_amp} model={model_name} "
+        f"test={len(test_dataset)} device={device} amp={use_amp} "
+        f"amp_dtype={amp_dtype if use_amp else 'fp32'} model={model_name} "
         f"count_scale={count_scale:.1f}"
     )
 
@@ -220,7 +232,7 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device_type=device.type,
-                dtype=torch.float16,
+                dtype=autocast_dtype,
                 enabled=use_amp,
             ):
                 pred_score, pred_class = model(x)
@@ -247,7 +259,7 @@ def train(
             best_val_count_mae = val_metrics["count_mae"]
             torch.save(
                 {
-                    "version": 4,
+                    "version": 5,
                     "model_name": model_name,
                     "state_dict": model.state_dict(),
                     "best_val_loss": best_val,
@@ -256,6 +268,13 @@ def train(
                     "activity_classes": ["0-5", "6-20", "21-50", "51-100", "101+"],
                     "seed": seed,
                     "data_mode": data_mode,
+                    "precision": {
+                        "amp_enabled": use_amp,
+                        "amp_dtype": amp_dtype if use_amp else "fp32",
+                        "grad_scaler_enabled": grad_scaler_enabled(
+                            amp_enabled=use_amp, amp_dtype=amp_dtype
+                        ),
+                    },
                     "preprocessing": preprocessing,
                     "count_scale": count_scale,
                     "split_counts": {
