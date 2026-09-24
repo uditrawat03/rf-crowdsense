@@ -1,5 +1,6 @@
 param(
-    [switch]$Reset
+    [switch]$Reset,
+    [switch]$WithOnnx
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +15,13 @@ if ($Reset -and (Test-Path ".venv")) {
     Remove-Item -Recurse -Force ".venv"
 }
 
-Write-Host "Syncing PyTorch 2.14 + torchvision 0.29 + CUDA 13.2..."
-uv sync --extra pytorch --extra dev
+if ($WithOnnx) {
+    Write-Host "Syncing PyTorch CUDA + ONNX export/runtime dependencies..."
+    uv sync --extra pytorch --extra onnx --extra dev
+} else {
+    Write-Host "Syncing PyTorch 2.14 + torchvision 0.29 + CUDA 13.2..."
+    uv sync --extra pytorch --extra dev
+}
 
 Write-Host "Environment check:"
 uv run rfcrowd doctor

@@ -4,7 +4,7 @@ RF CrowdSense is a GPU-oriented research repo for estimating **aggregate RF acti
 
 It does not decode communications, recover subscriber identifiers, track individual phones, or bypass cellular security.
 
-## v0.4 stack
+## v0.5 stack
 
 - Python 3.14 (latest 3.14.x selected by `uv`)
 - PyTorch 2.14.0
@@ -18,6 +18,9 @@ It does not decode communications, recover subscriber identifiers, track individ
 - Aggregate transmitter-count estimation derived from normalized activity
 - Split-conformal count intervals calibrated on the validation split
 - Single-sample PyTorch inference CLI
+- ONNX export using the PyTorch `torch.export`-based exporter
+- ONNX Runtime CPU/CUDA inference
+- PyTorch-vs-ONNX model-inference benchmarking
 
 ## Windows quick start with uv
 
@@ -31,10 +34,19 @@ uv python pin 3.14
 uv sync --extra pytorch --extra dev
 ```
 
+For ONNX export and ONNX Runtime benchmarking, include the `onnx` extra:
+
+```powershell
+uv sync --extra pytorch --extra onnx --extra dev
+```
+
 Or run the included setup script:
 
 ```powershell
 .\scripts\setup-windows.ps1 -Reset
+
+# Include ONNX dependencies too
+.\scripts\setup-windows.ps1 -Reset -WithOnnx
 ```
 
 `-Reset` removes an old `.venv` before syncing. Omit it if this is a fresh extraction.
@@ -188,6 +200,74 @@ uv run rfcrowd train-pytorch `
 
 The standard ResNet-18 first convolution is changed from three image channels to one spectrogram channel. No pretrained weights are downloaded.
 
+## Export a PyTorch checkpoint to ONNX
+
+Install the ONNX extra first:
+
+```powershell
+uv sync --extra pytorch --extra onnx --extra dev
+```
+
+Export a trained checkpoint. The sample is used only to derive the spectrogram shape expected by the model:
+
+```powershell
+uv run rfcrowd export-onnx `
+  --checkpoint .\artifacts\pytorch_activity.pt `
+  --sample .\data\synthetic-v0.2\sample_000000.npz `
+  --output .\artifacts\pytorch_activity.onnx `
+  --max-batch 256
+```
+
+The exporter uses the modern `torch.export`-based ONNX path, validates the generated ONNX model, and by default compares PyTorch and ONNX Runtime CPU outputs before accepting the export. It writes:
+
+```text
+artifacts/
+├── pytorch_activity.onnx
+└── pytorch_activity.onnx.json
+```
+
+The JSON sidecar keeps the preprocessing settings, activity labels, count scale, conformal count calibration, checkpoint SHA-256 and ONNX input/output metadata required for reproducible inference. The exported graph has a dynamic batch dimension up to `--max-batch`; spectrogram frequency/time dimensions remain fixed to the preprocessing configuration.
+
+Skip numerical export verification only when diagnosing an environment problem:
+
+```powershell
+uv run rfcrowd export-onnx `
+  --checkpoint .\artifacts\pytorch_activity.pt `
+  --sample .\data\synthetic-v0.2\sample_000000.npz `
+  --no-verify
+```
+
+## Run ONNX Runtime inference
+
+```powershell
+uv run rfcrowd predict-onnx `
+  --model .\artifacts\pytorch_activity.onnx `
+  --sample .\data\synthetic-v0.2\sample_000000.npz `
+  --provider cuda
+```
+
+Provider choices are `auto`, `cuda`, and `cpu`. `auto` prefers `CUDAExecutionProvider` when available and otherwise falls back to CPU. On Windows, the runtime tries to reuse the CUDA/cuDNN DLLs already provided by the PyTorch CUDA installation before creating the ONNX Runtime session.
+
+`rfcrowd doctor` now also reports the installed ONNX Runtime version and available execution providers.
+
+## Compare PyTorch and ONNX Runtime inference
+
+The benchmark reuses one already-preprocessed spectrogram, so it measures model inference rather than NumPy STFT preprocessing:
+
+```powershell
+uv run rfcrowd benchmark-inference `
+  --checkpoint .\artifacts\pytorch_activity.pt `
+  --onnx-model .\artifacts\pytorch_activity.onnx `
+  --sample .\data\synthetic-v0.2\sample_000000.npz `
+  --device cuda `
+  --provider cuda `
+  --batch-size 1 `
+  --warmup 20 `
+  --iterations 200
+```
+
+The JSON report includes mean, p50 and p95 latency, throughput, and ONNX Runtime mean-latency speedup relative to PyTorch eager execution. Try batch sizes such as `1`, `8`, `32`, and `64`, staying below the `--max-batch` used during export.
+
 ## GPU benchmark
 
 ```powershell
@@ -280,10 +360,21 @@ Out of scope:
 - add `predict-pytorch` for single-sample count/range inference
 - persist preprocessing and count-scale metadata required for reproducible inference
 
+### Milestone 3: ONNX export and runtime benchmarking
+
+- export CNN and ResNet-18 checkpoints through the modern PyTorch ONNX exporter
+- validate exported ONNX graphs and check PyTorch/ORT numerical parity
+- persist deployment metadata next to each ONNX model
+- add ONNX Runtime CPU/CUDA single-sample inference
+- reuse PyTorch CUDA libraries when ONNX Runtime initializes on Windows
+- add dynamic ONNX batch support up to a configured maximum
+- benchmark PyTorch eager vs ONNX Runtime with mean/p50/p95 latency and throughput
+- extend `rfcrowd doctor` with ONNX Runtime provider diagnostics
+
 ## Suggested next milestones
 
-1. Add ONNX export for the PyTorch models.
-2. Benchmark FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
-3. Add probability calibration for the activity-class head.
+1. Benchmark and optimize FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
+2. Add probability calibration for the activity-class head.
+3. Add TensorRT export/engine benchmarking after the ONNX baseline is measured.
 4. Add legal/public RF datasets to test synthetic-to-real domain shift.
 5. Add experiment tracking and reproducible benchmark reports.

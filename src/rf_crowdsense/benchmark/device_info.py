@@ -35,6 +35,7 @@ def collect() -> dict:
         "pytorch": {},
         "torchvision": {},
         "tensorflow": {},
+        "onnxruntime": {},
     }
 
     try:
@@ -56,6 +57,17 @@ def collect() -> dict:
         result["torchvision"] = {"version": torchvision.__version__}
     except Exception as exc:
         result["torchvision"] = {"available": False, "error": str(exc)}
+
+    try:
+        import onnxruntime as ort
+
+        result["onnxruntime"] = {
+            "version": ort.__version__,
+            "providers": ort.get_available_providers(),
+            "cuda_provider_available": "CUDAExecutionProvider" in ort.get_available_providers(),
+        }
+    except Exception as exc:
+        result["onnxruntime"] = {"available": False, "error": str(exc)}
 
     try:
         import tensorflow as tf

@@ -120,6 +120,66 @@ def predict_pytorch_cmd(
     print(json.dumps(result, indent=2))
 
 
+@app.command("export-onnx")
+def export_onnx_cmd(
+    checkpoint: Path = typer.Option(..., exists=True, dir_okay=False),
+    sample: Path = typer.Option(..., exists=True, dir_okay=False),
+    output: Path = typer.Option(Path("artifacts/pytorch_activity.onnx")),
+    opset: int = typer.Option(18, min=17),
+    max_batch: int = typer.Option(256, min=2),
+    verify: bool = typer.Option(True, "--verify/--no-verify"),
+):
+    from .deployment.onnx_export import export_checkpoint
+
+    result = export_checkpoint(
+        checkpoint,
+        sample,
+        output,
+        opset=opset,
+        max_batch=max_batch,
+        verify=verify,
+    )
+    print(json.dumps(result, indent=2))
+
+
+@app.command("predict-onnx")
+def predict_onnx_cmd(
+    model: Path = typer.Option(..., exists=True, dir_okay=False),
+    sample: Path = typer.Option(..., exists=True, dir_okay=False),
+    provider: str = typer.Option("auto", help="auto, cpu, or cuda"),
+):
+    from .inference.onnx_predict import predict_sample_onnx
+
+    result = predict_sample_onnx(model, sample, provider=provider)
+    print(json.dumps(result, indent=2))
+
+
+@app.command("benchmark-inference")
+def benchmark_inference_cmd(
+    checkpoint: Path = typer.Option(..., exists=True, dir_okay=False),
+    onnx_model: Path = typer.Option(..., exists=True, dir_okay=False),
+    sample: Path = typer.Option(..., exists=True, dir_okay=False),
+    device: str = typer.Option("auto", help="PyTorch: auto, cpu, or cuda"),
+    provider: str = typer.Option("auto", help="ONNX Runtime: auto, cpu, or cuda"),
+    batch_size: int = typer.Option(1, min=1),
+    warmup: int = typer.Option(20, min=0),
+    iterations: int = typer.Option(100, min=1),
+):
+    from .benchmark.inference import benchmark_engines
+
+    result = benchmark_engines(
+        checkpoint,
+        onnx_model,
+        sample,
+        device=device,
+        provider=provider,
+        batch_size=batch_size,
+        warmup=warmup,
+        iterations=iterations,
+    )
+    print(json.dumps(result, indent=2))
+
+
 @app.command("train-tensorflow")
 def train_tensorflow_cmd(
     dataset: Path = typer.Option(..., exists=True, file_okay=False),

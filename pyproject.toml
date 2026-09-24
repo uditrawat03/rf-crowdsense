@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rf-crowdsense"
-version = "0.4.0"
+version = "0.5.0"
 description = "GPU-accelerated aggregate RF activity estimation from synthetic or authorized IQ data"
 readme = "README.md"
 requires-python = ">=3.14.2,<3.15"
@@ -30,6 +30,12 @@ tensorflow-gpu = [
 api = [
   "fastapi>=0.116",
   "uvicorn>=0.35",
+]
+onnx = [
+  "onnx==1.23.0",
+  "onnxscript==0.7.2",
+  "onnxruntime-gpu==1.30.0; sys_platform == 'win32' or sys_platform == 'linux'",
+  "onnxruntime==1.30.0; sys_platform == 'darwin'",
 ]
 dev = [
   "pytest>=8.4",
