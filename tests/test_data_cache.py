@@ -66,3 +66,13 @@ def test_cache_requires_overwrite_when_settings_change(tmp_path: Path):
     build_spectrogram_cache(dataset, cache, nperseg=64)
     with pytest.raises(FileExistsError):
         build_spectrogram_cache(dataset, cache, nperseg=128)
+
+
+def test_resolve_count_scale_prefers_dataset_config(tmp_path: Path):
+    from rf_crowdsense.data import resolve_count_scale
+
+    dataset = tmp_path / "dataset"
+    cfg = GeneratorConfig(num_samples=256, max_devices=77)
+    generate_dataset(dataset, samples=4, seed=3, cfg=cfg)
+
+    assert resolve_count_scale(dataset) == 77.0

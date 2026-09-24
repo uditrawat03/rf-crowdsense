@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="RF CrowdSense API", version="0.2.0")
+app = FastAPI(title="RF CrowdSense API", version="0.4.0")
 
 
 class ActivityRequest(BaseModel):
@@ -13,7 +13,7 @@ class ActivityRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.2.0"}
+    return {"status": "ok", "version": "0.4.0"}
 
 
 @app.post("/estimate")

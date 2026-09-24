@@ -27,6 +27,23 @@ def load_manifest(dataset: Path) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def resolve_count_scale(dataset: Path, rows: list[dict] | None = None) -> float:
+    """Return the aggregate-count scale used to convert normalized activity to counts."""
+    summary_path = dataset / "dataset.json"
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            max_devices = float(summary.get("config", {}).get("max_devices", 0))
+            if max_devices > 0:
+                return max_devices
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    rows = rows if rows is not None else load_manifest(dataset)
+    observed = [float(row.get("active_devices", 0)) for row in rows]
+    return max(max(observed, default=1.0), 1.0)
+
+
 def manifest_sha256(dataset: Path) -> str:
     manifest = dataset / "manifest.jsonl"
     if not manifest.exists():

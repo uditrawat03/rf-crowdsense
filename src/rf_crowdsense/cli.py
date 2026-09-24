@@ -80,13 +80,44 @@ def train_pytorch_cmd(
     batch_size: int = typer.Option(32, min=1),
     model: str = typer.Option("cnn", help="cnn or resnet18"),
     amp: bool = typer.Option(True, "--amp/--no-amp"),
+    seed: int = typer.Option(42),
+    count_coverage: float = typer.Option(
+        0.90,
+        min=0.5,
+        max=0.999,
+        help="Nominal split-conformal coverage for aggregate-count intervals",
+    ),
     output: Path = typer.Option(Path("artifacts/pytorch_activity.pt")),
-    cache: Path | None = typer.Option(None, help="Prepared cache directory; defaults to <dataset>/cache when present"),
+    cache: Path | None = typer.Option(
+        None, help="Prepared cache directory; defaults to <dataset>/cache when present"
+    ),
 ):
     from .training.pytorch_train import train
 
-    path = train(dataset, epochs, batch_size, output, model_name=model, amp=amp, cache=cache)
+    path = train(
+        dataset,
+        epochs,
+        batch_size,
+        output,
+        model_name=model,
+        seed=seed,
+        amp=amp,
+        cache=cache,
+        count_coverage=count_coverage,
+    )
     print(f"saved: {path}")
+
+
+@app.command("predict-pytorch")
+def predict_pytorch_cmd(
+    checkpoint: Path = typer.Option(..., exists=True, dir_okay=False),
+    sample: Path = typer.Option(..., exists=True, dir_okay=False),
+    device: str = typer.Option("auto", help="auto, cpu, or cuda"),
+):
+    from .inference.pytorch_predict import predict_sample
+
+    result = predict_sample(checkpoint, sample, device=device)
+    print(json.dumps(result, indent=2))
 
 
 @app.command("train-tensorflow")

@@ -4,7 +4,7 @@ RF CrowdSense is a GPU-oriented research repo for estimating **aggregate RF acti
 
 It does not decode communications, recover subscriber identifiers, track individual phones, or bypass cellular security.
 
-## v0.3 stack
+## v0.4 stack
 
 - Python 3.14 (latest 3.14.x selected by `uv`)
 - PyTorch 2.14.0
@@ -15,6 +15,9 @@ It does not decode communications, recover subscriber identifiers, track individ
 - Custom RF CNN and torchvision ResNet-18
 - CUDA AMP training
 - Aggregate activity-range classification and normalized activity regression
+- Aggregate transmitter-count estimation derived from normalized activity
+- Split-conformal count intervals calibrated on the validation split
+- Single-sample PyTorch inference CLI
 
 ## Windows quick start with uv
 
@@ -113,10 +116,63 @@ uv run rfcrowd train-pytorch `
   --dataset .\data\synthetic-v0.2 `
   --model cnn `
   --epochs 10 `
-  --batch-size 64
+  --batch-size 64 `
+  --count-coverage 0.90
 ```
 
 CUDA AMP is enabled automatically when CUDA is available. Disable it with `--no-amp`. If `data/synthetic-v0.2/cache/cache.json` exists, training uses the cached spectrograms automatically and reports train/validation/test split sizes.
+
+Milestone 2 also reports aggregate transmitter-count MAE. The normalized activity head is converted back to a count using the dataset's configured `max_devices` value. The best checkpoint is then calibrated on the validation split with absolute-residual split conformal prediction. `--count-coverage 0.90` requests a 90% **dataset-level nominal coverage target** for the count interval. It is not a 90% probability statement for an individual sample.
+
+
+## Predict aggregate transmitter count
+
+After training, run inference against one authorized/synthetic `.npz` IQ sample:
+
+```powershell
+uv run rfcrowd predict-pytorch `
+  --checkpoint .\artifacts\pytorch_activity.pt `
+  --sample .\data\synthetic-v0.2\sample_000000.npz `
+  --device cuda
+```
+
+Example shape of the JSON output:
+
+```json
+{
+  "activity_score": 0.31,
+  "estimated_active_transmitters": 37.2,
+  "activity_class": {
+    "index": 2,
+    "label": "21-50",
+    "probability": 0.81
+  },
+  "count_interval": {
+    "lower": 29.4,
+    "upper": 45.0,
+    "nominal_coverage": 0.9,
+    "method": "split_conformal_absolute_residual"
+  }
+}
+```
+
+The exact values depend on the trained checkpoint. The class softmax probability is reported separately and is not calibrated in this milestone.
+
+### How the count interval works
+
+RF CrowdSense uses the validation split only to estimate the conformal residual radius:
+
+```text
+validation truth + validation predictions
+                  ↓
+          absolute residuals
+                  ↓
+       conformal residual quantile
+                  ↓
+ predicted count ± calibrated radius
+```
+
+The held-out test split is then used to report count MAE and observed interval coverage. This keeps interval calibration separate from final test evaluation.
 
 ## Train torchvision ResNet-18
 
@@ -215,10 +271,19 @@ Out of scope:
 - held-out test metrics saved into the checkpoint
 - cache reuse/staleness checks based on the source manifest and preprocessing settings
 
+### Milestone 2: aggregate count calibration
+
+- convert normalized activity predictions back to aggregate transmitter counts
+- report validation and held-out test count MAE
+- fit split-conformal absolute-residual intervals on the validation split
+- save calibration metadata and held-out interval coverage into checkpoints
+- add `predict-pytorch` for single-sample count/range inference
+- persist preprocessing and count-scale metadata required for reproducible inference
+
 ## Suggested next milestones
 
-1. Add calibration for count ranges and confidence intervals.
-2. Add ONNX export for the PyTorch models.
-3. Benchmark FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
+1. Add ONNX export for the PyTorch models.
+2. Benchmark FP32 vs FP16/BF16 on the RTX 5050 Laptop GPU.
+3. Add probability calibration for the activity-class head.
 4. Add legal/public RF datasets to test synthetic-to-real domain shift.
 5. Add experiment tracking and reproducible benchmark reports.
